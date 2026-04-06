@@ -10,14 +10,14 @@ mongo = AsyncIOMotorClient(MONGO_URL)
 db = mongo["BroadcastManager"]
 sessions_col = db["sessions"]
 
-# ---------------- Bot Client ----------------
+# ---------------- Bot ----------------
 bot = TelegramClient("dm-bot", API_ID, API_HASH)
 
 clients = {}
 
-# ---------------- START ALL ACCOUNTS ----------------
+# ---------------- START CLIENTS ----------------
 async def start_clients():
-    docs = [s async for s in sessions_col.find({})]
+    docs = await sessions_col.find({}).to_list(length=1000)
 
     for s in docs:
         try:
@@ -26,36 +26,46 @@ async def start_clients():
 
             if not await cli.is_user_authorized():
                 print(f"❌ Session expired: {s['tg_id']}")
-                await sessions_col.delete_one({"tg_id": s["tg_id"]})
                 continue
 
             me = await cli.get_me()
-            acc_id = s["tg_id"]
 
-            acc_name = f"{me.first_name or ''} {(me.last_name or '')}".strip()
-            acc_username = f"@{me.username}" if me.username else "NoUsername"
+            clients[s["tg_id"]] = {
+                "client": cli,
+                "name": f"{me.first_name or ''} {(me.last_name or '')}".strip(),
+                "username": f"@{me.username}" if me.username else "NoUsername",
+                "id": s["tg_id"]
+            }
 
-            clients[acc_id] = cli
+            print(f"✅ Loaded: {me.first_name}")
 
-            # ---------------- DM HANDLER ----------------
-            async def handler(event):
-                try:
-                    if not event.is_private:
-                        return
+        except Exception as e:
+            print("CLIENT ERROR:", e)
 
-                    user = await event.get_sender()
-                    if not user:
-                        return
 
-                    user_id = user.id
+# ---------------- GLOBAL DM LISTENER ----------------
+async def dm_listener():
+    for acc_id, data in clients.items():
+        cli = data["client"]
 
-                    msg = f"""📩 DM MESSAGE
+        @cli.on(events.NewMessage(incoming=True))
+        async def handler(event, acc_id=acc_id, data=data):
+
+            try:
+                if not event.is_private:
+                    return
+
+                user = await event.get_sender()
+                if not user:
+                    return
+
+                msg = f"""📩 DM MESSAGE
 
 👤 User: {user.first_name}
-🆔 USER_ID:{user_id}
+🆔 USER_ID:{user.id}
 
-🤖 Account: {acc_name}
-🔗 Username: {acc_username}
+🤖 Account: {data['name']}
+🔗 Username: {data['username']}
 🆔 ACCOUNT_ID:{acc_id}
 
 🕒 Time: {datetime.now().strftime("%H:%M:%S")}
@@ -64,17 +74,12 @@ async def start_clients():
 {event.raw_text or "Media"}
 """
 
-                    await bot.send_message(DM_LOGGER_ID, msg)
+                await bot.send_message(DM_LOGGER_ID, msg)
 
-                except Exception as e:
-                    print("DM ERROR:", e)
+            except Exception as e:
+                print("DM ERROR:", e)
 
-            cli.add_event_handler(handler, events.NewMessage(incoming=True, func=lambda e: e.is_private))
-
-            print(f"✅ Running: {acc_name} ({acc_id})")
-
-        except Exception as e:
-            print("CLIENT ERROR:", e)
+        await cli.start()
 
 
 # ---------------- REPLY SYSTEM ----------------
@@ -87,20 +92,16 @@ async def reply_handler(event):
         reply = await event.get_reply_message()
         data = reply.text
 
-        if not data:
-            return
         if "USER_ID:" not in data or "ACCOUNT_ID:" not in data:
-            return
-        if not data.startswith("📩"):
             return
 
         user_id = int(data.split("USER_ID:")[1].split("\n")[0])
         acc_id = int(data.split("ACCOUNT_ID:")[1].split("\n")[0])
 
-        cli = clients.get(acc_id)
+        cli = clients.get(acc_id, {}).get("client")
 
         if not cli:
-            return await event.reply("❌ Account not active")
+            return await event.reply("❌ Account not found")
 
         if event.message.media:
             path = await event.download_media()
@@ -108,7 +109,7 @@ async def reply_handler(event):
         else:
             await cli.send_message(user_id, event.text)
 
-        await event.reply("✅ Sent to DM")
+        await event.reply("✅ Sent")
 
     except Exception as e:
         await event.reply(f"❌ Error: {e}")
@@ -118,7 +119,9 @@ async def reply_handler(event):
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
     await start_clients()
-    print("🚀 DM BOT STARTED")
+    await dm_listener()
+
+    print("🚀 DM BOT RUNNING")
     await bot.run_until_disconnected()
 
 
