@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -29,11 +30,16 @@ async def start_clients():
                 await sessions_col.delete_one({"tg_id": s["tg_id"]})
                 continue
 
+            me = await cli.get_me()
             acc_id = s["tg_id"]
+
+            acc_name = f"{me.first_name or ''} {(me.last_name or '')}".strip()
+            acc_username = f"@{me.username}" if me.username else "NoUsername"
+
             clients[acc_id] = cli
 
             @cli.on(events.NewMessage(incoming=True))
-            async def handler(event, acc_id=acc_id):
+            async def handler(event, acc_id=acc_id, acc_name=acc_name, acc_username=acc_username):
                 if not event.is_private:
                     return
 
@@ -41,19 +47,27 @@ async def start_clients():
                     user = await event.get_sender()
                     user_id = user.id
 
-                    msg = f"""📩 New DM
-👤 {user.first_name}
-🆔 USER_ID:{user_id}
-🤖 ACC_ID:{acc_id}
+                    msg = f"""📩 DM MESSAGE
 
-💬 {event.raw_text or "Media"}
+👤 User: {user.first_name}
+🆔 USER_ID:{user_id}
+
+🤖 Account: {acc_name}
+🔗 Username: {acc_username}
+🆔 ACCOUNT_ID:{acc_id}
+
+🕒 Time: {datetime.now().strftime("%H:%M:%S")}
+
+💬 Message:
+{event.raw_text or "Media"}
 """
+
                     await bot.send_message(DM_LOGGER_ID, msg)
 
                 except Exception as e:
                     print("DM Error:", e)
 
-            print("✅ Running:", acc_id)
+            print(f"✅ Running: {acc_name} ({acc_id})")
 
         except Exception as e:
             print("Client Error:", e)
@@ -69,24 +83,30 @@ async def reply_handler(event):
         reply = await event.get_reply_message()
         data = reply.text
 
-        if not data or "USER_ID:" not in data:
+        # 🔥 STRICT FILTER (ONLY DM)
+        if not data:
+            return
+        if not data.startswith("📩 DM MESSAGE"):
+            return
+        if "USER_ID:" not in data or "ACCOUNT_ID:" not in data:
             return
 
         user_id = int(data.split("USER_ID:")[1].split("\n")[0])
-        acc_id = int(data.split("ACC_ID:")[1].split("\n")[0])
+        acc_id = int(data.split("ACCOUNT_ID:")[1].split("\n")[0])
 
         cli = clients.get(acc_id)
 
         if not cli:
-            return await event.reply("❌ Client not found")
+            return await event.reply("❌ Account not active")
 
+        # send reply
         if event.message.media:
             path = await event.download_media()
             await cli.send_file(user_id, path, caption=event.text or "")
         else:
             await cli.send_message(user_id, event.text)
 
-        await event.reply("✅ Reply sent")
+        await event.reply("✅ Reply sent in DM")
 
     except Exception as e:
         await event.reply(f"❌ Error: {e}")
