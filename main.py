@@ -10,19 +10,18 @@ mongo = AsyncIOMotorClient(MONGO_URL)
 db = mongo["BroadcastManager"]
 sessions_col = db["sessions"]
 
-# ---------------- Bot ----------------
+# ---------------- Bot Client ----------------
 bot = TelegramClient("dm-bot", API_ID, API_HASH)
 
 clients = {}
 
-# ---------------- START CLIENTS ----------------
+# ---------------- START ALL ACCOUNTS ----------------
 async def start_clients():
     docs = [s async for s in sessions_col.find({})]
 
     for s in docs:
         try:
             cli = TelegramClient(StringSession(s["string"]), API_ID, API_HASH)
-
             await cli.connect()
 
             if not await cli.is_user_authorized():
@@ -38,13 +37,16 @@ async def start_clients():
 
             clients[acc_id] = cli
 
-            @cli.on(events.NewMessage(incoming=True))
-            async def handler(event, acc_id=acc_id, acc_name=acc_name, acc_username=acc_username):
-                if not event.is_private:
-                    return
-
+            # ---------------- DM HANDLER ----------------
+            async def handler(event):
                 try:
+                    if not event.is_private:
+                        return
+
                     user = await event.get_sender()
+                    if not user:
+                        return
+
                     user_id = user.id
 
                     msg = f"""📩 DM MESSAGE
@@ -65,12 +67,14 @@ async def start_clients():
                     await bot.send_message(DM_LOGGER_ID, msg)
 
                 except Exception as e:
-                    print("DM Error:", e)
+                    print("DM ERROR:", e)
+
+            cli.add_event_handler(handler, events.NewMessage(incoming=True, func=lambda e: e.is_private))
 
             print(f"✅ Running: {acc_name} ({acc_id})")
 
         except Exception as e:
-            print("Client Error:", e)
+            print("CLIENT ERROR:", e)
 
 
 # ---------------- REPLY SYSTEM ----------------
@@ -83,12 +87,11 @@ async def reply_handler(event):
         reply = await event.get_reply_message()
         data = reply.text
 
-        # 🔥 STRICT FILTER (ONLY DM)
         if not data:
             return
-        if not data.startswith("📩 DM MESSAGE"):
-            return
         if "USER_ID:" not in data or "ACCOUNT_ID:" not in data:
+            return
+        if not data.startswith("📩"):
             return
 
         user_id = int(data.split("USER_ID:")[1].split("\n")[0])
@@ -99,14 +102,13 @@ async def reply_handler(event):
         if not cli:
             return await event.reply("❌ Account not active")
 
-        # send reply
         if event.message.media:
             path = await event.download_media()
             await cli.send_file(user_id, path, caption=event.text or "")
         else:
             await cli.send_message(user_id, event.text)
 
-        await event.reply("✅ Reply sent in DM")
+        await event.reply("✅ Sent to DM")
 
     except Exception as e:
         await event.reply(f"❌ Error: {e}")
