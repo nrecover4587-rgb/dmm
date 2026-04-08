@@ -5,7 +5,7 @@ from telethon.sessions import StringSession
 from telethon.errors import AuthKeyUnregisteredError, SessionRevokedError
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# ✅ CONFIG IMPORT
+# ✅ CONFIG
 from config import *
 
 # ========= MONGO =========
@@ -14,6 +14,9 @@ db = mongo["ManagerBot"]
 
 sessions_col = db["sessions"]
 tracked_col = db["tracked_users"]
+
+# 👉 reply mapping DB (permanent)
+map_col = db["message_map"]
 
 # ========= BOT =========
 bot = TelegramClient("manager-bot", API_ID, API_HASH)
@@ -26,8 +29,8 @@ def is_owner(uid):
 async def send_log(text):
     try:
         await bot.send_message(LOGGER_ID, text)
-    except Exception as e:
-        print("LOG ERROR:", e)
+    except:
+        print(text)
 
 
 # ========= ADD SESSION =========
@@ -37,7 +40,6 @@ async def add_session(event):
         return await event.reply("❌ Not owner")
 
     sess = event.pattern_match.group(1).strip()
-
     cli = TelegramClient(StringSession(sess), API_ID, API_HASH)
 
     try:
@@ -55,7 +57,6 @@ async def add_session(event):
         )
 
         await event.reply(f"✅ Session added `{me.id}`")
-        await send_log(f"➕ Session added `{me.id}`")
 
     except Exception as e:
         await event.reply(f"❌ Invalid session: {e}")
@@ -92,24 +93,9 @@ async def remove_user(event):
     res = await tracked_col.delete_one({"user_id": user_id})
 
     if res.deleted_count:
-        await event.reply(f"🗑 Removed `{user_id}`")
+        await event.reply("🗑 Removed")
     else:
         await event.reply("⚠️ Not found")
-
-
-# ========= LIST USERS =========
-@bot.on(events.NewMessage(pattern=r"^/users$"))
-async def list_users(event):
-    if not is_owner(event.sender_id):
-        return await event.reply("❌ Not owner")
-
-    users = [u async for u in tracked_col.find({})]
-
-    if not users:
-        return await event.reply("No users")
-
-    txt = "\n".join([f"`{u['user_id']}`" for u in users])
-    await event.reply(f"Tracked Users:\n{txt}")
 
 
 # ========= DM LOGGER =========
@@ -135,17 +121,23 @@ async def start_dm_logger():
                 if not user:
                     return
 
-                text = event.message.message or "Non-text"
+                # forward message
+                fwd = await event.forward_to(LOGGER_ID)
 
-                msg = f"""
+                # save mapping in DB
+                await map_col.insert_one({
+                    "logger_msg_id": fwd.id,
+                    "user_id": user_id,
+                    "session": s["string"]
+                })
+
+                info = f"""
 📩 Tracked DM
 
 👤 {sender.first_name}
 🆔 {user_id}
-
-💬 {text}
 """
-                await send_log(msg)
+                await send_log(info)
 
             cli.add_event_handler(handler, events.NewMessage(incoming=True))
 
@@ -155,6 +147,44 @@ async def start_dm_logger():
 
         except Exception as e:
             print("Error:", e)
+
+
+# ========= REPLY SYSTEM =========
+@bot.on(events.NewMessage(chats=LOGGER_ID))
+async def reply_handler(event):
+
+    if not event.is_reply:
+        return
+
+    reply = await event.get_reply_message()
+
+    data = await map_col.find_one({"logger_msg_id": reply.id})
+
+    if not data:
+        return
+
+    user_id = data["user_id"]
+    session = data["session"]
+
+    try:
+        cli = TelegramClient(StringSession(session), API_ID, API_HASH)
+        await cli.start()
+
+        if event.message.media:
+            await cli.send_file(
+                user_id,
+                event.message.media,
+                caption=event.message.text or ""
+            )
+        else:
+            await cli.send_message(user_id, event.message.message)
+
+        await event.reply("✅ Reply sent")
+
+        await cli.disconnect()
+
+    except Exception as e:
+        await event.reply(f"❌ Error: {e}")
 
 
 # ========= MAIN =========
