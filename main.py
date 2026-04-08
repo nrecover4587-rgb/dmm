@@ -23,7 +23,7 @@ async def start_clients():
         try:
             cli = TelegramClient(StringSession(s["string"]), API_ID, API_HASH)
 
-            await cli.connect()
+            await cli.start()
 
             if not await cli.is_user_authorized():
                 print(f"❌ Session expired: {s['tg_id']}")
@@ -37,10 +37,10 @@ async def start_clients():
 
             clients[acc_id] = cli
 
-            # ---------------- DM HANDLER ----------------
-            @cli.on(events.NewMessage(incoming=True))
-            async def dm_handler(event, acc_id=acc_id, acc_name=acc_name, acc_username=acc_username):
+            print(f"✅ Running: {acc_name}")
 
+            # ---------------- DM HANDLER ----------------
+            async def dm_handler(event):
                 if not event.is_private:
                     return
 
@@ -54,11 +54,11 @@ async def start_clients():
                     msg = f"""📩 DM MESSAGE
 
 👤 User: {user.first_name}
-🆔 USER_ID:{user_id}
+USER_ID:{user_id}
 
 🤖 Account: {acc_name}
-🔗 Username: {acc_username}
-🆔 ACCOUNT_ID:{acc_id}
+Username: {acc_username}
+ACCOUNT_ID:{acc_id}
 
 🕒 Time: {datetime.now().strftime("%H:%M:%S")}
 
@@ -73,8 +73,7 @@ async def start_clients():
                 except Exception as e:
                     print("DM ERROR:", e)
 
-            await cli.start()
-            print(f"✅ Running: {acc_name}")
+            cli.add_event_handler(dm_handler, events.NewMessage(incoming=True))
 
         except Exception as e:
             print("CLIENT ERROR:", e)
@@ -91,11 +90,7 @@ async def reply_handler(event):
         reply = await event.get_reply_message()
         data = reply.text
 
-        if not data:
-            return
-        if "USER_ID:" not in data or "ACCOUNT_ID:" not in data:
-            return
-        if not data.startswith("📩"):
+        if not data or "USER_ID:" not in data or "ACCOUNT_ID:" not in data:
             return
 
         user_id = int(data.split("USER_ID:")[1].split("\n")[0])
