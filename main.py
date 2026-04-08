@@ -5,14 +5,8 @@ from telethon.sessions import StringSession
 from telethon.errors import AuthKeyUnregisteredError, SessionRevokedError
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# ========= CONFIG =========
-API_ID = 12345
-API_HASH = "your_api_hash"
-BOT_TOKEN = "your_bot_token"
-MONGO_URL = "your_mongo_url"
-
-LOGGER_ID = -1001234567890
-OWNER_IDS = [123456789]
+# ✅ CONFIG IMPORT
+from config import *
 
 # ========= MONGO =========
 mongo = AsyncIOMotorClient(MONGO_URL)
@@ -24,17 +18,16 @@ tracked_col = db["tracked_users"]
 # ========= BOT =========
 bot = TelegramClient("manager-bot", API_ID, API_HASH)
 
-
 # ========= HELPERS =========
 def is_owner(uid):
-    return uid in OWNER_IDS
+    return int(uid) in [int(x) for x in OWNER_IDS]
 
 
 async def send_log(text):
     try:
         await bot.send_message(LOGGER_ID, text)
-    except:
-        print(text)
+    except Exception as e:
+        print("LOG ERROR:", e)
 
 
 # ========= ADD SESSION =========
@@ -43,7 +36,7 @@ async def add_session(event):
     if not is_owner(event.sender_id):
         return await event.reply("❌ Not owner")
 
-    sess = event.pattern_match.group(1)
+    sess = event.pattern_match.group(1).strip()
 
     cli = TelegramClient(StringSession(sess), API_ID, API_HASH)
 
@@ -62,6 +55,7 @@ async def add_session(event):
         )
 
         await event.reply(f"✅ Session added `{me.id}`")
+        await send_log(f"➕ Session added `{me.id}`")
 
     except Exception as e:
         await event.reply(f"❌ Invalid session: {e}")
@@ -98,7 +92,7 @@ async def remove_user(event):
     res = await tracked_col.delete_one({"user_id": user_id})
 
     if res.deleted_count:
-        await event.reply("🗑 Removed")
+        await event.reply(f"🗑 Removed `{user_id}`")
     else:
         await event.reply("⚠️ Not found")
 
@@ -123,24 +117,27 @@ async def start_dm_logger():
     docs = [s async for s in sessions_col.find({})]
 
     for s in docs:
-        cli = TelegramClient(StringSession(s["string"]), API_ID, API_HASH)
+        try:
+            cli = TelegramClient(StringSession(s["string"]), API_ID, API_HASH)
+            await cli.start()
 
-        @cli.on(events.NewMessage(incoming=True))
-        async def handler(event):
-            if not event.is_private:
-                return
+            print(f"✅ Logger started for {s['tg_id']}")
 
-            sender = await event.get_sender()
-            user_id = sender.id
+            async def handler(event, client=cli):
+                if not event.is_private:
+                    return
 
-            # check tracked users
-            user = await tracked_col.find_one({"user_id": user_id})
-            if not user:
-                return
+                sender = await event.get_sender()
+                user_id = sender.id
 
-            text = event.message.message or "Non-text"
+                # check tracked users
+                user = await tracked_col.find_one({"user_id": user_id})
+                if not user:
+                    return
 
-            msg = f"""
+                text = event.message.message or "Non-text"
+
+                msg = f"""
 📩 Tracked DM
 
 👤 {sender.first_name}
@@ -148,15 +145,14 @@ async def start_dm_logger():
 
 💬 {text}
 """
+                await send_log(msg)
 
-            await send_log(msg)
+            cli.add_event_handler(handler, events.NewMessage(incoming=True))
 
-        try:
-            await cli.start()
-            print(f"✅ Logger started for {s['tg_id']}")
         except (AuthKeyUnregisteredError, SessionRevokedError):
             await sessions_col.delete_one({"tg_id": s["tg_id"]})
-            print("Session removed")
+            print(f"❌ Removed dead session {s['tg_id']}")
+
         except Exception as e:
             print("Error:", e)
 
@@ -165,7 +161,7 @@ async def start_dm_logger():
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
 
-    await send_log("🚀 Bot Started")
+    print("🚀 Bot Started")
 
     await start_dm_logger()
 
